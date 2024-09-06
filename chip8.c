@@ -34,7 +34,7 @@ typedef enum{
 	PAUSED,
 }emulator_state_t ;
 typedef struct{
-	uint16_t opcpde;
+	uint16_t opcode;
 	uint16_t NNN;		// 12-bit address or constant;
 	uint8_t NN;			// 8-bit constant
 	uint8_t N;			// 4-bit constant
@@ -46,6 +46,7 @@ typedef struct{
 	emulator_state_t state;		// State of the emulator
 	uint8_t ram[4096];			// 4KB of RAM
 	uint16_t stack[12];			// Stack of 12 16-bit values for upto 12 layers of nesting
+	uint16_t* stack_ptr;				// Stack Pointer
 	uint8_t V[16];				// 8-bit registers from V0 to VF
 	uint16_t I;					// 16-bit register I
 	uint8_t delay_timer;		// Allows for the delay to be accounted for for refreshing monitor
@@ -54,6 +55,8 @@ typedef struct{
 	const char* rom_name;		// Pointer to the ROM which we are running
 	uint16_t pc;				// Program Counter
 	instruction_t inst;			// Current instruction
+	bool display[64*32];		// display buffer
+	
 }chip8_t;
 
 // Initialize SDL
@@ -148,6 +151,7 @@ bool init_chip8(chip8_t *chip8,const char* rom_path){
 	chip8->state = RUNNING;   // This is the default chip8 state
 	chip8->pc = 0x200;		  // This is the default program counter start in Chip8;
 	chip8->rom_name = rom_path;
+	chip8->stack_ptr = &chip8->stack[0];
 	return true;
 }
 
@@ -162,7 +166,7 @@ bool set_config_from_args(config_t *config,int argc,char **argv){
 	config->bg_color = 0x00000000; // Black 	
 	config->scale = 20;			  // Scale of the window
 	// Check if the user has provided the values
-	for(int i = 1;i<argc;i++){
+	for(int i = 2;i<argc;i++){
 		if(strcmp(argv[i],"-h")==0){
 			config->window_height = atoi(argv[i+1]);
 		}
@@ -224,9 +228,91 @@ void handle_inputs(chip8_t *chip8){
 	}
 }
 
+#ifdef DEBUG
+void print_debug_info(const chip8_t *chip8){
+	printf("Address : 0x%04X , Opcode : 0x%04X , Desc :",chip8->pc-2,chip8->inst.opcode);
+	switch (chip8->inst.opcode>>12 & 0x0F) {
+		case(0x00):
+			if(chip8->inst.NN == 0xE0){
+				// Clear Screen
+				// memset(&chip8->display[0],false,sizeof(chip8->display));
+				printf("Clear Screen\n");
+			}else if(chip8->inst.NN == 0xEE){
+				// Return from subroutine
+				// chip8->pc = *(--chip8->stack_ptr);
+				// chip8->stack_ptr--; 
+				printf("Return from subroutine to address 0x%04X\n",*(chip8->stack_ptr-1));
+			}			
+			break;
+		case(0x02):
+			// Call a subroutine
+			// *(chip8->stack_ptr++) = chip8->pc;  // Basically we are saving curr addres to return to once func is done
+			// chip8->pc = chip8->inst.NNN; 	// Jump to the subroutine address
+			printf("Call subroutine\n");
+			break;
+		case(0x0A):
+		    // Set I to the given address NNN
+			// chip8->I = chip8->inst.NNN;
+			printf("Set I to 0x%04X\n",chip8->inst.NNN);
+			break;
+		
+		case(0x06):
+			// Set Vx to NN
+			// chip8->V[chip8->inst.X] = chip8->inst.NN;
+			printf("Set V[%d] to 0x%02X\n",chip8->inst.X,chip8->inst.NN);
+			break;
+		default:
+			printf("Unknown Opcode\n");
+			break;		// unknown opcode or invalid
+	}		
+}
+#endif //DEBUG
+
 void emulate_instruction(chip8_t *chip8){
-	chip8->inst.opcpde = (chip8->ram[chip8->pc] << 8) | chip8->ram[chip8->pc+1];  // Each opcode is 2 bytes long
+	chip8->inst.opcode = (chip8->ram[chip8->pc] << 8) | chip8->ram[chip8->pc+1];  // Each opcode is 2 bytes long
 	chip8->pc +=2; // Move the program counter to the next instruction 
+	
+	// Decode Opcodes
+	// Instruction is of type DXYN each letter reps a nibble which is 4 bits long
+	chip8->inst.NNN = chip8->inst.opcode & 0x0FFF;
+	chip8->inst.NN = chip8->inst.opcode & 0x0FF;
+	chip8->inst.N = chip8->inst.opcode & 0x0F;
+	chip8->inst.X  = chip8->inst.opcode>>8 & 0x0F;
+	chip8->inst.Y  = chip8->inst.opcode>>4 & 0x0F;
+	
+#ifdef DEBUG
+	print_debug_info(chip8);
+#endif //DEBUG
+	
+	// Emulate all opcodes
+	// Look up wikipedia for the opcode implementation the switch cases are laid out according to the page
+	switch (chip8->inst.opcode>>12 & 0x0F) {
+		case(0x00):
+			if(chip8->inst.NN == 0xE0){
+				// Clear Screen
+				memset(&chip8->display[0],false,sizeof(chip8->display));
+			}else if(chip8->inst.NN == 0xEE){
+				// Return from subroutine
+				chip8->pc = *(--chip8->stack_ptr);
+				chip8->stack_ptr--; 
+			}
+			break;
+		case(0x02):
+			// Call a subroutine
+			*(chip8->stack_ptr++) = chip8->pc;  // Basically we are saving curr addres to return to once func is done
+			chip8->pc = chip8->inst.NNN; 	// Jump to the subroutine address
+			break;
+		case(0x0A):
+		    // Set I to the given address NNN
+			chip8->I = chip8->inst.NNN; 
+			break;
+		case(0x06):
+			// Set Vx to NN
+			chip8->V[chip8->inst.X] = chip8->inst.NN;
+			break;
+		default:
+			break;		// unknown opcode or invalid
+	}		
 }
 
 int main(int argc, char **argv){
